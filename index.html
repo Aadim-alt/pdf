@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PDF Converter - Images & ODT to PDF</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -314,7 +314,7 @@
             <ul>
                 <li><strong>Single Image:</strong> Upload one image to convert it to PDF</li>
                 <li><strong>Multiple Images:</strong> Upload multiple images to combine them into one PDF</li>
-                <li><strong>ODT to PDF:</strong> Upload an ODT file to convert it to PDF</li>
+                <li><strong>ODT to PDF:</strong> Upload an ODT file to convert it to PDF (extracts text content)</li>
                 <li>Supported formats: JPG, PNG, BMP, GIF, WebP for images</li>
                 <li>Maximum file size: 10MB per file</li>
             </ul>
@@ -469,6 +469,7 @@
                 }
                 showNotification('PDF created successfully!', 'success');
             } catch (error) {
+                console.error('Conversion error:', error);
                 showNotification(`Error: ${error.message}`, 'error');
             } finally {
                 convertBtn.disabled = false;
@@ -516,35 +517,80 @@
         }
 
         async function convertODTtoPDF(odtFile) {
-            updateProgress(30);
-            
-            const arrayBuffer = await odtFile.arrayBuffer();
-            const result = await mammoth.extractRawText({ arrayBuffer });
-            
-            updateProgress(60);
-
-            const pdf = new jsPDF();
-            const pageWidth = pdf.internal.pageSize.getWidth();
-            const pageHeight = pdf.internal.pageSize.getHeight();
-            const margin = 20;
-            const maxWidth = pageWidth - 2 * margin;
-            
-            const lines = pdf.splitTextToSize(result.value, maxWidth);
-            
-            let y = margin;
-            const lineHeight = 7;
-
-            for (let i = 0; i < lines.length; i++) {
-                if (y + lineHeight > pageHeight - margin) {
-                    pdf.addPage();
-                    y = margin;
+            try {
+                updateProgress(20);
+                
+                // Read ODT file as ArrayBuffer
+                const arrayBuffer = await odtFile.arrayBuffer();
+                
+                updateProgress(40);
+                
+                // ODT files are ZIP archives
+                const zip = await JSZip.loadAsync(arrayBuffer);
+                
+                updateProgress(60);
+                
+                // Extract content.xml which contains the text
+                const contentXml = await zip.file('content.xml').async('string');
+                
+                updateProgress(70);
+                
+                // Parse XML and extract text
+                const parser = new DOMParser();
+                const xmlDoc = parser.parseFromString(contentXml, 'text/xml');
+                
+                // Extract text from all text:p (paragraph) elements
+                const paragraphs = xmlDoc.getElementsByTagName('text:p');
+                const textContent = [];
+                
+                for (let i = 0; i < paragraphs.length; i++) {
+                    const text = paragraphs[i].textContent.trim();
+                    if (text) {
+                        textContent.push(text);
+                    }
                 }
-                pdf.text(lines[i], margin, y);
-                y += lineHeight;
+                
+                updateProgress(80);
+                
+                if (textContent.length === 0) {
+                    throw new Error('No text content found in ODT file');
+                }
+                
+                // Create PDF
+                const pdf = new jsPDF();
+                const pageWidth = pdf.internal.pageSize.getWidth();
+                const pageHeight = pdf.internal.pageSize.getHeight();
+                const margin = 20;
+                const maxWidth = pageWidth - 2 * margin;
+                const lineHeight = 7;
+                
+                let y = margin;
+                
+                textContent.forEach((paragraph) => {
+                    const lines = pdf.splitTextToSize(paragraph, maxWidth);
+                    
+                    lines.forEach((line) => {
+                        if (y + lineHeight > pageHeight - margin) {
+                            pdf.addPage();
+                            y = margin;
+                        }
+                        pdf.text(line, margin, y);
+                        y += lineHeight;
+                    });
+                    
+                    // Add space between paragraphs
+                    y += lineHeight * 0.5;
+                });
+                
+                updateProgress(100);
+                
+                // Save PDF
+                pdf.save(odtFile.name.replace('.odt', '.pdf'));
+                
+            } catch (error) {
+                console.error('ODT conversion error:', error);
+                throw new Error('Failed to convert ODT file. Please ensure it is a valid ODT document.');
             }
-
-            updateProgress(100);
-            pdf.save(odtFile.name.replace('.odt', '.pdf'));
         }
 
         function loadImage(file) {
